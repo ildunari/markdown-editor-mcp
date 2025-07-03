@@ -1,11 +1,11 @@
 {
-  "name": "@wonderwhy-er/desktop-commander",
-  "version": "0.2.3",
-  "description": "MCP server for terminal operations and file editing",
+  "name": "markdown-editor-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for markdown editing and management",
   "license": "MIT",
-  "author": "Eduards Ruzga",
-  "homepage": "https://github.com/wonderwhy-er/DesktopCommanderMCP",
-  "bugs": "https://github.com/wonderwhy-er/DesktopCommanderMCP/issues",
+  "author": "",
+  "homepage": "",
+  "bugs": "",
   "type": "module",
   "engines": {
     "node": ">=18.0.0"

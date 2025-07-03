@@ -5,30 +5,10 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { exec } from "node:child_process";
 import { version as nodeVersion } from 'process';
-import * as https from 'https';
-import { randomUUID } from 'crypto';
-
-// Google Analytics configuration
-const GA_MEASUREMENT_ID = 'G-NGGDNL0K4L'; // Replace with your GA4 Measurement ID
-const GA_API_SECRET = '5M0mC--2S_6t94m8WrI60A';   // Replace with your GA4 API Secre
-const GA_BASE_URL = `https://www.google-analytics.com/mp/collect?measurement_id=${GA_MEASUREMENT_ID}&api_secret=${GA_API_SECRET}`;
-
-// Generate a unique anonymous ID using UUID - consistent with privacy policy
-let uniqueUserId = 'unknown';
-
-try {
-    // Use randomUUID from crypto module instead of machine-id
-    // This generates a truly random identifier not tied to hardware
-    uniqueUserId = randomUUID();
-} catch (error) {
-    // Fall back to a semi-unique identifier if UUID generation fails
-    uniqueUserId = `random-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
-}
 
 // Setup tracking
 let setupSteps = []; // Track setup progress
 let setupStartTime = Date.now();
-
 
 // Function to get npm version
 async function getNpmVersion() {
@@ -46,726 +26,279 @@ async function getNpmVersion() {
     return 'unknown';
   }
 }
+
 const getVersion = async () => {
     try {
-        if (process.env.npm_package_version) {
-            return process.env.npm_package_version;
-        }
-        
-        // Check if version.js exists in dist directory (when running from root)
-        const versionPath = join(__dirname, 'version.js');
-        if (existsSync(versionPath)) {
-            const { VERSION } = await import(versionPath);
-            return VERSION;
-        }
-
-        const packageJsonPath = join(__dirname, 'package.json');
-        if (existsSync(packageJsonPath)) {
-            const packageJsonContent = readFileSync(packageJsonPath, 'utf8');
-            const packageJson = JSON.parse(packageJsonContent);
-            if (packageJson.version) {
-                return packageJson.version;
-            }
-        }
-        
-        
-        return 'unknown';
+        const packagePath = join(dirname(fileURLToPath(import.meta.url)), 'package.json');
+        const packageContent = readFileSync(packagePath, 'utf-8');
+        const packageData = JSON.parse(packageContent);
+        return packageData.version || 'unknown';
     } catch (error) {
         return 'unknown';
     }
 };
 
-// Function to detect shell environmen
+// Detect shell
 function detectShell() {
-  // Check for Windows shells
-  if (process.platform === 'win32') {
-    if (process.env.TERM_PROGRAM === 'vscode') return 'vscode-terminal';
-    if (process.env.WT_SESSION) return 'windows-terminal';
-    if (process.env.SHELL?.includes('bash')) return 'git-bash';
-    if (process.env.TERM?.includes('xterm')) return 'xterm-on-windows';
-    if (process.env.ComSpec?.toLowerCase().includes('powershell')) return 'powershell';
-    if (process.env.PROMPT) return 'cmd';
-
-    // WSL detection
-    if (process.env.WSL_DISTRO_NAME || process.env.WSLENV) {
-      return `wsl-${process.env.WSL_DISTRO_NAME || 'unknown'}`;
-    }
-
-    return 'windows-unknown';
-  }
-
-  // Unix-based shells
-  if (process.env.SHELL) {
-    const shellPath = process.env.SHELL.toLowerCase();
-    if (shellPath.includes('bash')) return 'bash';
-    if (shellPath.includes('zsh')) return 'zsh';
-    if (shellPath.includes('fish')) return 'fish';
-    if (shellPath.includes('ksh')) return 'ksh';
-    if (shellPath.includes('csh')) return 'csh';
-    if (shellPath.includes('dash')) return 'dash';
-    return `other-unix-${shellPath.split('/').pop()}`;
-  }
-
-  // Terminal emulators and IDE terminals
-  if (process.env.TERM_PROGRAM) {
-    return process.env.TERM_PROGRAM.toLowerCase();
-  }
-
-  return 'unknown-shell';
+    const shell = process.env.SHELL || 'unknown';
+    
+    // Extract just the shell name from the path
+    const shellName = shell.split('/').pop() || shell;
+    
+    // Map common shells to standardized names
+    const shellMap = {
+        'bash': 'bash',
+        'zsh': 'zsh',
+        'fish': 'fish',
+        'sh': 'sh',
+        'dash': 'dash',
+        'ksh': 'ksh',
+        'tcsh': 'tcsh',
+        'csh': 'csh',
+        'cmd': 'cmd',
+        'powershell': 'powershell',
+        'pwsh': 'powershell'
+    };
+    
+    return shellMap[shellName.toLowerCase()] || shellName;
 }
 
-// Function to determine execution context
+// Get execution context (how the setup was run)
 function getExecutionContext() {
-  // Check if running from npx
-  const isNpx = process.env.npm_lifecycle_event === 'npx' ||
-                process.env.npm_execpath?.includes('npx') ||
-                process.env._?.includes('npx') ||
-                import.meta.url.includes('node_modules');
-
-  // Check if installed globally
-  const isGlobal = process.env.npm_config_global === 'true' ||
-                   process.argv[1]?.includes('node_modules/.bin');
-
-  // Check if it's run from a script in package.json
-  const isNpmScript = !!process.env.npm_lifecycle_script;
-
-  return {
-    runMethod: isNpx ? 'npx' : (isGlobal ? 'global' : (isNpmScript ? 'npm_script' : 'direct')),
-    isCI: !!process.env.CI || !!process.env.GITHUB_ACTIONS || !!process.env.TRAVIS || !!process.env.CIRCLECI,
-    shell: detectShell()
-  };
-}
-
-// Helper function to get standard environment properties for tracking
-let npmVersionCache = null;
-
-// Enhanced version with step tracking - will replace the original after initialization
-async function enhancedGetTrackingProperties(additionalProps = {}) {
-  const propertiesStep = addSetupStep('get_tracking_properties');
-  try {
-    if (npmVersionCache === null) {
-      npmVersionCache = await getNpmVersion();
+    // Check if running via npx
+    if (process.env.npm_command === 'exec' || process.argv[1]?.includes('npx')) {
+        return 'npx';
     }
-
-    const context = getExecutionContext();
-    const version = await getVersion();
-
-    updateSetupStep(propertiesStep, 'completed');
-    return {
-      platform: platform(),
-      node_version: nodeVersion,
-      npm_version: npmVersionCache,
-      execution_context: context.runMethod,
-      is_ci: context.isCI,
-      shell: context.shell,
-      app_version: version,
-      engagement_time_msec: "100",
-      ...additionalProps
-    };
-  } catch (error) {
-    updateSetupStep(propertiesStep, 'failed', error);
-    return {
-      platform: platform(),
-      node_version: nodeVersion,
-      error: error.message,
-      engagement_time_msec: "100",
-      ...additionalProps
-    };
-  }
-}
-
-// Enhanced tracking function with retries and better error handling
-// This replaces the basic implementation for all tracking after initialization
-async function trackEvent(eventName, additionalProps = {}) {
-    const trackingStep = addSetupStep(`track_event_${eventName}`);
-
-    if (!GA_MEASUREMENT_ID || !GA_API_SECRET) {
-        updateSetupStep(trackingStep, 'skipped', new Error('GA not configured'));
-        return;
+    
+    // Check if running via npm run
+    if (process.env.npm_lifecycle_event) {
+        return `npm_${process.env.npm_lifecycle_event}`;
     }
-
-    // Add retry capability
-    const maxRetries = 2;
-    let attempt = 0;
-    let lastError = null;
-
-    while (attempt <= maxRetries) {
-        try {
-            attempt++;
-
-            // Get enriched properties
-            const eventProperties = await enhancedGetTrackingProperties(additionalProps);
-
-            // Prepare GA4 payload
-            const payload = {
-                client_id: uniqueUserId,
-                non_personalized_ads: false,
-                timestamp_micros: Date.now() * 1000,
-                events: [{
-                    name: eventName,
-                    params: eventProperties
-                }]
-            };
-
-            // Send to Google Analytics
-            const postData = JSON.stringify(payload);
-            
-            const options = {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(postData)
-                }
-            };
-
-            const result = await new Promise((resolve, reject) => {
-                const req = https.request(GA_BASE_URL, options);
-
-                // Set timeout to prevent blocking
-                const timeoutId = setTimeout(() => {
-                    req.destroy();
-                    reject(new Error('Request timeout'));
-                }, 5000); // Increased timeout to 5 seconds
-
-                req.on('error', (error) => {
-                    clearTimeout(timeoutId);
-                    reject(error);
-                });
-
-                req.on('response', (res) => {
-                    clearTimeout(timeoutId);
-                    let data = '';
-
-                    res.on('data', (chunk) => {
-                        data += chunk;
-                    });
-
-                    res.on('error', (error) => {
-                        reject(error);
-                    });
-
-                    res.on('end', () => {
-                        if (res.statusCode >= 200 && res.statusCode < 300) {
-                            resolve({ success: true, data });
-                        } else {
-                            reject(new Error(`HTTP error ${res.statusCode}: ${data}`));
-                        }
-                    });
-                });
-
-                req.write(postData);
-                req.end();
-            });
-
-            updateSetupStep(trackingStep, 'completed');
-            return result;
-
-        } catch (error) {
-            lastError = error;
-            if (attempt <= maxRetries) {
-                // Wait before retry (exponential backoff)
-                await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-            }
-        }
+    
+    // Check if running directly via node
+    if (process.argv[0]?.includes('node')) {
+        return 'node_direct';
     }
-
-    // All retries failed
-    updateSetupStep(trackingStep, 'failed', lastError);
-    return false;
+    
+    return 'unknown';
 }
-
-// Ensure tracking completes before process exits
-async function ensureTrackingCompleted(eventName, additionalProps = {}, timeoutMs = 6000) {
-    return new Promise(async (resolve) => {
-        const timeoutId = setTimeout(() => {
-            resolve(false);
-        }, timeoutMs);
-
-        try {
-            await trackEvent(eventName, additionalProps);
-            clearTimeout(timeoutId);
-            resolve(true);
-        } catch (error) {
-            clearTimeout(timeoutId);
-            resolve(false);
-        }
-    });
-}
-
-
-// Fix for Windows ESM path resolution
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Setup logging early to capture everything
-const LOG_FILE = join(__dirname, 'setup.log');
 
 function logToFile(message, isError = false) {
-    const timestamp = new Date().toISOString();
-    const logMessage = `${timestamp} - ${isError ? 'ERROR: ' : ''}${message}\n`;
+    const logDir = join(homedir(), '.claude-code-logs');
+    
     try {
-        appendFileSync(LOG_FILE, logMessage);
-        // For setup script, we'll still output to console but in JSON forma
-        const jsonOutput = {
-            type: isError ? 'error' : 'info',
-            timestamp,
-            message
-        };
-        process.stdout.write(`${message}\n`);
-    } catch (err) {
-        // Last resort error handling
-        process.stderr.write(`${JSON.stringify({
-            type: 'error',
-            timestamp: new Date().toISOString(),
-            message: `Failed to write to log file: ${err.message}`
-        })}\n`);
+        // Create log directory if it doesn't exist
+        if (!existsSync(logDir)) {
+            mkdirSync(logDir, { recursive: true });
+        }
+
+        // Create timestamp for log entry
+        const timestamp = new Date().toISOString();
+        const logEntry = `[${timestamp}] ${isError ? 'ERROR: ' : ''}${message}\n`;
+        
+        // Determine log file name (use date for rotation)
+        const dateStr = new Date().toISOString().split('T')[0];
+        const logFile = join(logDir, `setup-${dateStr}.log`);
+        
+        // Append to log file
+        appendFileSync(logFile, logEntry);
+        
+        // Also create a latest.log symlink/copy for easy access
+        const latestLog = join(logDir, 'setup-latest.log');
+        writeFileSync(latestLog, logEntry, { flag: 'a' });
+        
+    } catch (error) {
+        // Silently fail - we don't want logging issues to break setup
+        // but still try to output to console
+        if (isError) {
+            console.error(`[Log Error] ${error.message}`);
+        }
     }
 }
 
-// Setup global error handlers
-process.on('uncaughtException', async (error) => {
-    await trackEvent('npx_setup_uncaught_exception', { error: error.message });
-    setTimeout(() => {
-        process.exit(1);
-    }, 1000);
-});
-
-process.on('unhandledRejection', async (reason, promise) => {
-    await trackEvent('npx_setup_unhandled_rejection', { error: String(reason) });
-    setTimeout(() => {
-        process.exit(1);
-    }, 1000);
-});
-
-// Track when the process is about to exi
-let isExiting = false;
-process.on('exit', () => {
-    if (!isExiting) {
-        isExiting = true;
-    }
-});
-
-
-// Function to check for debug mode argument
 function isDebugMode() {
     return process.argv.includes('--debug');
 }
 
-// Initial tracking - ensure it completes before continuing
-await ensureTrackingCompleted('npx_setup_start', {
-    argv: process.argv.join(' '),
-    start_time: new Date().toISOString()
-});
-
-// Determine OS and set appropriate config path
-const os = platform();
-const isWindows = os === 'win32';
-let claudeConfigPath;
-
-switch (os) {
-    case 'win32':
-        claudeConfigPath = join(process.env.APPDATA, 'Claude', 'claude_desktop_config.json');
-        break;
-    case 'darwin':
-        claudeConfigPath = join(homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
-        break;
-    case 'linux':
-        claudeConfigPath = join(homedir(), '.config', 'Claude', 'claude_desktop_config.json');
-        break;
-    default:
-        // Fallback for other platforms
-        claudeConfigPath = join(homedir(), '.claude_desktop_config.json');
-}
-
-
-
-// Tracking step functions
 function addSetupStep(step, status = 'started', error = null) {
-    const timestamp = Date.now();
-    setupSteps.push({
+    const stepInfo = {
         step,
         status,
-        timestamp,
-        timeFromStart: timestamp - setupStartTime,
-        error: error ? error.message || String(error) : null
-    });
-    return setupSteps.length - 1; // Return the index for later updates
+        timestamp: Date.now(),
+        duration: 0,
+        error: error ? error.message || error : null
+    };
+    
+    setupSteps.push(stepInfo);
+    return setupSteps.length - 1; // Return index for updates
 }
 
 function updateSetupStep(index, status, error = null) {
-    if (setupSteps[index]) {
-        const timestamp = Date.now();
-        setupSteps[index].status = status;
-        setupSteps[index].completionTime = timestamp;
-        setupSteps[index].timeFromStart = timestamp - setupStartTime;
+    if (index >= 0 && index < setupSteps.length) {
+        const step = setupSteps[index];
+        step.status = status;
+        step.duration = Date.now() - step.timestamp;
         if (error) {
-            setupSteps[index].error = error.message || String(error);
+            step.error = error.message || error;
         }
     }
 }
 
 async function execAsync(command) {
-    const execStep = addSetupStep(`exec_${command.substring(0, 20)}...`);
     return new Promise((resolve, reject) => {
-        // Use PowerShell on Windows for better Unicode support and consistency
-        const actualCommand = isWindows
-        ? `cmd.exe /c ${command}`
-        : command;
-
-        exec(actualCommand, { timeout: 10000 }, (error, stdout, stderr) => {
+        exec(command, (error, stdout, stderr) => {
             if (error) {
-                updateSetupStep(execStep, 'failed', error);
                 reject(error);
-                return;
+            } else {
+                resolve(stdout.trim());
             }
-            updateSetupStep(execStep, 'completed');
-            resolve({ stdout, stderr });
         });
     });
 }
 
 async function restartClaude() {
     const restartStep = addSetupStep('restart_claude');
+    
+    const processes = ['Claude', 'Claude.app'];
+    
+    for (const processName of processes) {
+        try {
+            await execAsync(`pkill -x "${processName}"`);
+        } catch (error) {
+            // Process might not be running, which is fine
+        }
+    }
+    
+    // Give it a moment to fully close
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Try to start Claude
     try {
-        const platform = process.platform;
-        // Track restart attempt
-        await trackEvent('npx_setup_restart_claude_attempt', { platform });
-
-        // Try to kill Claude process first
-        const killStep = addSetupStep('kill_claude_process');
-        try {
-            switch (platform) {
-                case "win32":
-                    await execAsync(
-                        `taskkill /F /IM "Claude.exe"`,
-                    );
-                    break;
-                case "darwin":
-                    await execAsync(
-                        `killall "Claude"`,
-                    );
-                    break;
-                case "linux":
-                    await execAsync(
-                        `pkill -f "claude"`,
-                    );
-                    break;
-            }
-            updateSetupStep(killStep, 'completed');
-            await trackEvent('npx_setup_kill_claude_success', { platform });
-        } catch (killError) {
-            // It's okay if Claude isn't running - update step but continue
-            updateSetupStep(killStep, 'no_process_found', killError);
-            await trackEvent('npx_setup_kill_claude_not_needed', { platform });
-        }
-
-        // Wait a bit to ensure process termination
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-
-        // Try to start Claude
-        const startStep = addSetupStep('start_claude_process');
-        try {
-            if (platform === "win32") {
-                // Windows - note it won't actually start Claude
-                logToFile("Windows: Claude restart skipped - requires manual restart");
-                updateSetupStep(startStep, 'skipped');
-                await trackEvent('npx_setup_start_claude_skipped', { platform });
-            } else if (platform === "darwin") {
-                await execAsync(`open -a "Claude"`);
-                updateSetupStep(startStep, 'completed');
-                logToFile("\n✅ Claude has been restarted automatically!");
-                await trackEvent('npx_setup_start_claude_success', { platform });
-            } else if (platform === "linux") {
-                await execAsync(`claude`);
-                logToFile("\n✅ Claude has been restarted automatically!");
-                updateSetupStep(startStep, 'completed');
-                await trackEvent('npx_setup_start_claude_success', { platform });
-            } else {
-                logToFile('\nTo use the server restart Claude if it\'s currently running\n');
-            }
-            
-            logToFile("\n✅ Installation successfully completed! Thank you for using Desktop Commander!\n");
-            logToFile('\nThe server is available as "desktop-commander" in Claude\'s MCP server list');
-            
-            logToFile("Future updates will install automatically — no need to run this setup again.\n\n");
-            logToFile("💬 Need help or found an issue? Join our community: https://discord.com/invite/kQ27sNnZr7\n\n")
-            updateSetupStep(restartStep, 'completed');
-            await trackEvent('npx_setup_restart_claude_success', { platform });
-        } catch (startError) {
-            updateSetupStep(startStep, 'failed', startError);
-            await trackEvent('npx_setup_start_claude_error', {
-                platform,
-                error: startError.message
-            });
-            throw startError; // Re-throw to handle in the outer catch
-        }
+        await execAsync('open -a Claude');
+        updateSetupStep(restartStep, 'completed');
     } catch (error) {
         updateSetupStep(restartStep, 'failed', error);
-        await trackEvent('npx_setup_restart_claude_error', { error: error.message });
-        logToFile(`Failed to restart Claude: ${error}. Please restart it manually.`, true);
-        logToFile(`If Claude Desktop is not installed use this link to download https://claude.ai/download`, true);
+        console.error('Failed to restart Claude:', error.message);
+        throw error;
     }
 }
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-// Main function to export for ESM compatibility
-export default async function setup() {
-    // Add tracking for setup function entry
-    await trackEvent('npx_setup_function_started');
+const args = process.argv.slice(2);
 
-    const setupStep = addSetupStep('main_setup');
-    const debugMode = isDebugMode();
+(async () => {
+  console.log('\n🚀 Setting up Markdown Editor MCP for Claude Desktop...\n');
 
-    // Print ASCII art for DESKTOP COMMANDER
-    console.log('\n');
-    console.log('██████╗ ███████╗███████╗██╗  ██╗████████╗ ██████╗ ██████╗     ██████╗ ██████╗ ███╗   ███╗███╗   ███╗ █████╗ ███╗   ██╗██████╗ ███████╗██████╗ ');
-    console.log('██╔══██╗██╔════╝██╔════╝██║ ██╔╝╚══██╔══╝██╔═══██╗██╔══██╗   ██╔════╝██╔═══██╗████╗ ████║████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝██╔══██╗');
-    console.log('██║  ██║█████╗  ███████╗█████╔╝    ██║   ██║   ██║██████╔╝   ██║     ██║   ██║██╔████╔██║██╔████╔██║███████║██╔██╗ ██║██║  ██║█████╗  ██████╔╝');
-    console.log('██║  ██║██╔══╝  ╚════██║██╔═██╗    ██║   ██║   ██║██╔═══╝    ██║     ██║   ██║██║╚██╔╝██║██║╚██╔╝██║██╔══██║██║╚██╗██║██║  ██║██╔══╝  ██╔══██╗');
-    console.log('██████╔╝███████╗███████║██║  ██╗   ██║   ╚██████╔╝██║        ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║ ╚═╝ ██║██║  ██║██║ ╚████║██████╔╝███████╗██║  ██║');
-    console.log('╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝         ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚══════╝╚═╝  ╚═╝');
-    console.log('\n');
+  // Determine the install path and whether we're doing local or global install
+  let installPath = __dirname;
+  let isDebug = false;
+  let shouldUninstall = false;
 
-    if (debugMode) {
-        logToFile('Debug mode enabled. Will configure with Node.js inspector options.');
-        await trackEvent('npx_setup_debug_mode', { enabled: true });
-    }
+  if (args.includes('--debug')) {
+    isDebug = true;
+    console.log('🐛 Debug mode enabled\n');
+  }
 
+  if (args.includes('--uninstall')) {
+    shouldUninstall = true;
+    console.log('🗑️  Uninstall mode\n');
+  }
+
+  // Find Claude config file
+  const os = platform();
+  let configPath;
+
+  if (os === 'darwin') {
+    configPath = join(homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  } else if (os === 'win32') {
+    configPath = join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'Claude', 'claude_desktop_config.json');
+  } else {
+    console.error('❌ Unsupported operating system:', os);
+    process.exit(1);
+  }
+
+  // Ensure config directory exists
+  const configDir = dirname(configPath);
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true });
+  }
+
+  // Read existing config or create new one
+  let config = {};
+  if (existsSync(configPath)) {
+    const configContent = readFileSync(configPath, 'utf-8');
     try {
-        // Check if config directory exists and create it if necessary
-        const configDirStep = addSetupStep('check_config_directory');
-        const configDir = dirname(claudeConfigPath);
-
-        try {
-            if (!existsSync(configDir)) {
-                logToFile(`Creating config directory: ${configDir}`);
-                mkdirSync(configDir, { recursive: true });
-                await trackEvent('npx_setup_create_config_dir', { path: configDir });
-            }
-            updateSetupStep(configDirStep, 'completed');
-        } catch (dirError) {
-            updateSetupStep(configDirStep, 'failed', dirError);
-            await trackEvent('npx_setup_create_config_dir_error', {
-                path: configDir,
-                error: dirError.message
-            });
-            throw new Error(`Failed to create config directory: ${dirError.message}`);
-        }
-
-        // Check if config file exists and create default if no
-        const configFileStep = addSetupStep('check_config_file');
-        let config;
-
-        if (!existsSync(claudeConfigPath)) {
-            logToFile(`Claude config file not found at: ${claudeConfigPath}`);
-            logToFile('Creating default config file...');
-
-            // Track new installation
-            await trackEvent('npx_setup_create_default_config');
-
-            // Create default config with shell based on platform
-            const defaultConfig = {
-                "serverConfig": isWindows
-                    ? {
-                        "command": "cmd.exe",
-                        "args": ["/c"]
-                      }
-                    : {
-                        "command": "/bin/sh",
-                        "args": ["-c"]
-                      }
-            };
-
-            try {
-                writeFileSync(claudeConfigPath, JSON.stringify(defaultConfig, null, 2));
-                logToFile('Default config file created.');
-                config = defaultConfig;
-                updateSetupStep(configFileStep, 'created');
-                await trackEvent('npx_setup_config_file_created');
-            } catch (writeError) {
-                updateSetupStep(configFileStep, 'create_failed', writeError);
-                await trackEvent('npx_setup_config_file_create_error', { error: writeError.message });
-                throw new Error(`Failed to create config file: ${writeError.message}`);
-            }
-        } else {
-            // Read existing config
-            const readConfigStep = addSetupStep('read_config_file');
-            try {
-                const configData = readFileSync(claudeConfigPath, 'utf8');
-                config = JSON.parse(configData);
-                updateSetupStep(readConfigStep, 'completed');
-                updateSetupStep(configFileStep, 'exists');
-                await trackEvent('npx_setup_config_file_read');
-            } catch (readError) {
-                updateSetupStep(readConfigStep, 'failed', readError);
-                await trackEvent('npx_setup_config_file_read_error', { error: readError.message });
-                throw new Error(`Failed to read config file: ${readError.message}`);
-            }
-        }
-
-        // Prepare the new server config based on OS
-        const configPrepStep = addSetupStep('prepare_server_config');
-
-        // Determine if running through npx or locally
-        const isNpx = import.meta.url.includes('node_modules');
-        await trackEvent('npx_setup_execution_mode', { isNpx });
-
-        // Fix Windows path handling for npx execution
-        let serverConfig;
-
-        try {
-            if (debugMode) {
-                // Use Node.js with inspector flag for debugging
-                if (isNpx) {
-                    // Debug with npx
-                    logToFile('Setting up debug configuration with npx. The process will pause on start until a debugger connects.');
-                    // Add environment variables to help with debugging
-                    const debugEnv = {
-                        "NODE_OPTIONS": "--trace-warnings --trace-exit",
-                        "DEBUG": "*"
-                    };
-
-                    serverConfig = {
-                        "command": isWindows ? "node.exe" : "node",
-                        "args": [
-                            "--inspect-brk=9229",
-                            isWindows ?
-                                join(process.env.APPDATA || '', "npm", "npx.cmd").replace(/\\/g, '\\\\') :
-                                "$(which npx)",
-                            "@wonderwhy-er/desktop-commander@latest"
-                        ],
-                        "env": debugEnv
-                    };
-                    await trackEvent('npx_setup_config_debug_npx');
-                } else {
-                    // Debug with local installation path
-                    const indexPath = join(__dirname, 'dist', 'index.js');
-                    logToFile('Setting up debug configuration with local path. The process will pause on start until a debugger connects.');
-                    // Add environment variables to help with debugging
-                    const debugEnv = {
-                        "NODE_OPTIONS": "--trace-warnings --trace-exit",
-                        "DEBUG": "*"
-                    };
-
-                    serverConfig = {
-                        "command": isWindows ? "node.exe" : "node",
-                        "args": [
-                            "--inspect-brk=9229",
-                            indexPath.replace(/\\/g, '\\\\') // Double escape backslashes for JSON
-                        ],
-                        "env": debugEnv
-                    };
-                    await trackEvent('npx_setup_config_debug_local');
-                }
-            } else {
-                // Standard configuration without debug
-                if (isNpx) {
-                    serverConfig = {
-                        "command": isWindows ? "npx.cmd" : "npx",
-                        "args": [
-                            "@wonderwhy-er/desktop-commander@latest"
-                        ]
-                    };
-                    await trackEvent('npx_setup_config_standard_npx');
-                } else {
-                    // For local installation, use absolute path to handle Windows properly
-                    const indexPath = join(__dirname, 'dist', 'index.js');
-                    serverConfig = {
-                        "command": "node",
-                        "args": [
-                            indexPath.replace(/\\/g, '\\\\') // Double escape backslashes for JSON
-                        ]
-                    };
-                    await trackEvent('npx_setup_config_standard_local');
-                }
-            }
-            updateSetupStep(configPrepStep, 'completed');
-        } catch (prepError) {
-            updateSetupStep(configPrepStep, 'failed', prepError);
-            await trackEvent('npx_setup_config_prep_error', { error: prepError.message });
-            throw new Error(`Failed to prepare server config: ${prepError.message}`);
-        }
-
-        // Update the config
-        const updateConfigStep = addSetupStep('update_config');
-        try {
-            // Initialize mcpServers if it doesn't exist
-            if (!config.mcpServers) {
-                config.mcpServers = {};
-            }
-
-            // Check if the old "desktopCommander" exists and remove i
-            if (config.mcpServers.desktopCommander) {
-                delete config.mcpServers.desktopCommander;
-                await trackEvent('npx_setup_remove_old_config');
-            }
-
-            // Add or update the terminal server config with the proper name "desktop-commander"
-            config.mcpServers["desktop-commander"] = serverConfig;
-
-            // Write the updated config back
-            writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2), 'utf8');
-            updateSetupStep(updateConfigStep, 'completed');
-            await trackEvent('npx_setup_update_config');
-        } catch (updateError) {
-            updateSetupStep(updateConfigStep, 'failed', updateError);
-            await trackEvent('npx_setup_update_config_error', { error: updateError.message });
-            throw new Error(`Failed to update config: ${updateError.message}`);
-        }
-        const appVersion = await getVersion()
-        logToFile(`✅ Desktop Commander MCP v${appVersion} successfully added to Claude’s configuration.`);
-        logToFile(`Configuration location: ${claudeConfigPath}`);
-
-        if (debugMode) {
-            logToFile('\nTo use the debug server:\n1. Restart Claude if it\'s currently running\n2. The server will be available as "desktop-commander-debug" in Claude\'s MCP server list\n3. Connect your debugger to port 9229');
-        }
-
-        // Try to restart Claude
-        await restartClaude();
-
-        // Mark the main setup as completed
-        updateSetupStep(setupStep, 'completed');
-
-        // Ensure final tracking event is sent before exi
-        await ensureTrackingCompleted('npx_setup_complete', {
-            total_steps: setupSteps.length,
-            total_time_ms: Date.now() - setupStartTime
-        });
-
-
-
-        return true;
+      config = JSON.parse(configContent);
     } catch (error) {
-        updateSetupStep(setupStep, 'failed', error);
-        // Send detailed info about the failure
-        await ensureTrackingCompleted('npx_setup_final_error', {
-            error: error.message,
-            error_stack: error.stack,
-            total_steps: setupSteps.length,
-            last_successful_step: setupSteps.filter(s => s.status === 'completed').pop()?.step || 'none'
-        });
-
-        logToFile(`Error updating Claude configuration: ${error}`, true);
-        return false;
+      console.error('❌ Error parsing existing config:', error);
+      process.exit(1);
     }
-}
+  }
 
-// Allow direct execution
-if (process.argv.length >= 2 && process.argv[1] === fileURLToPath(import.meta.url)) {
-    setup().then(success => {
-        if (!success) {
-            setTimeout(() => {
-                process.exit(1);
-            }, 1000);
-        }
-    }).catch(async error => {
-        await ensureTrackingCompleted('npx_setup_fatal_error', {
-            error: error.message,
-            error_stack: error.stack
-        });
-        logToFile(`Fatal error: ${error}`, true);
-        setTimeout(() => {
-            process.exit(1);
-        }, 1000);
-    });
-}
+  // Initialize mcpServers if it doesn't exist
+  if (!config.mcpServers) {
+    config.mcpServers = {};
+  }
+
+  if (shouldUninstall) {
+    // Remove the server from config
+    if (config.mcpServers['markdown-editor-mcp']) {
+      delete config.mcpServers['markdown-editor-mcp'];
+      console.log('✅ Removed markdown-editor-mcp from Claude config');
+    } else {
+      console.log('ℹ️  markdown-editor-mcp was not found in Claude config');
+    }
+  } else {
+    // Add our server configuration
+    const serverPath = join(installPath, 'dist', 'index.js');
+    
+    const serverConfig = {
+      command: "node",
+      args: isDebug ? ["--inspect-brk=9229", serverPath] : [serverPath]
+    };
+
+    config.mcpServers['markdown-editor-mcp'] = serverConfig;
+
+    console.log('✅ Added markdown-editor-mcp to Claude config');
+    console.log('📍 Server path:', serverPath);
+    
+    if (isDebug) {
+      console.log('\n🐛 Debug mode configuration:');
+      console.log('- Node.js inspector will be available on port 9229');
+      console.log('- You can attach a debugger to debug the MCP server');
+      console.log('- Use Chrome DevTools or VS Code for debugging');
+      console.log('- Open chrome://inspect in Chrome to connect to the debugger\n');
+    }
+  }
+
+  // Write updated config
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  console.log('✅ Updated Claude config at:', configPath);
+
+  if (!shouldUninstall) {
+    console.log('\n🎉 Installation complete!');
+    console.log('\n📝 Next steps:');
+    console.log('1. Restart Claude Desktop app');
+    console.log('2. Look for "markdown-editor-mcp" in the available MCP servers');
+    console.log('3. The server will start automatically when you use Claude\n');
+    
+    if (isDebug) {
+      console.log('🐛 Debug-specific instructions:');
+      console.log('- When Claude starts the server, it will pause and wait for debugger');
+      console.log('- Attach your debugger to port 9229 to continue execution\n');
+    }
+  } else {
+    console.log('\n🎉 Uninstallation complete!');
+    console.log('The server has been removed from Claude config.');
+    console.log('Restart Claude Desktop app to apply changes.\n');
+  }
+
+  // Log completion
+  logToFile(`Setup completed successfully - Mode: ${shouldUninstall ? 'uninstall' : 'install'}, Debug: ${isDebug}`);
+})().catch(error => {
+  console.error('\n❌ Setup failed:', error);
+  logToFile(`Setup failed: ${error.message}`, true);
+  process.exit(1);
+});
