@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "description": "MCP server for markdown editing and management",
   "license": "MIT",
-  "author": "",
-  "homepage": "",
-  "bugs": "",
+  "author": "ildunari",
+  "homepage": "https://github.com/ildunari/markdown-editor-mcp#readme",
+  "bugs": "https://github.com/ildunari/markdown-editor-mcp/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ildunari/markdown-editor-mcp.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=18.0.0"
@@ -48,20 +52,17 @@
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "terminal",
+    "markdown",
+    "markdown-editor",
     "claude",
     "ai",
-    "command-line",
-    "process-management",
     "file-editing",
-    "code-editing",
-    "diff",
-    "patch",
-    "block-editing",
+    "text-editor",
+    "markdown-preview",
+    "markdown-syntax",
     "file-system",
     "text-manipulation",
-    "code-modification",
-    "surgical-edits",
+    "document-editing",
     "file-operations"
   ],
   "dependencies": {
